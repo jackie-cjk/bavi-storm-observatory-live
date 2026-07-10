@@ -66,6 +66,410 @@ type TyphoonPayload = {
 };
 
 const BEIJING = { latitude: 39.9042, longitude: 116.4074 };
+const BAVI_CACHE_KEY = "bavi-live-cache-v1";
+const NMC_LIST_ENDPOINT =
+  "https://typhoon.nmc.cn/weatherservice/typhoon/jsons/list_default";
+const NMC_DETAIL_ENDPOINT =
+  "https://typhoon.nmc.cn/weatherservice/typhoon/jsons";
+const NMC_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== ""
+    ? value.trim()
+    : null;
+}
+
+function compactUtcToIso(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+  if (!match) return null;
+
+  const timestamp = Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+  );
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function epochToIso(value: unknown): string | null {
+  const timestamp = finiteNumber(value);
+  if (timestamp === null) return null;
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function isWholeOuterParentheses(value: string): boolean {
+  if (!value.startsWith("(") || !value.endsWith(")")) return false;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+
+    if (character === '"') inString = true;
+    else if (character === "(") depth += 1;
+    else if (character === ")") {
+      depth -= 1;
+      if (depth < 0 || (depth === 0 && index !== value.length - 1)) return false;
+    }
+  }
+  return depth === 0 && !inString;
+}
+
+/** Strip NMC's JSONP wrapper and parse only the enclosed JSON; never execute it. */
+function parseNmcPayload(text: string): unknown {
+  if (text.length === 0 || text.length > NMC_MAX_RESPONSE_BYTES) {
+    throw new Error("NMC response size is invalid");
+  }
+
+  let payload = text.replace(/^\uFEFF/, "").trim();
+  if (payload.startsWith("{") || payload.startsWith("[")) {
+    return JSON.parse(payload) as unknown;
+  }
+
+  const callbackMatch = payload.match(
+    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\(/,
+  );
+  if (!callbackMatch) throw new Error("NMC response is not JSON or JSONP");
+
+  let end = payload.length;
+  while (end > 0 && /\s/.test(payload[end - 1])) end -= 1;
+  if (payload[end - 1] === ";") {
+    end -= 1;
+    while (end > 0 && /\s/.test(payload[end - 1])) end -= 1;
+  }
+  if (payload[end - 1] !== ")") {
+    throw new Error("NMC JSONP wrapper is incomplete");
+  }
+
+  payload = payload.slice(payload.indexOf("(") + 1, end - 1).trim();
+  while (isWholeOuterParentheses(payload)) {
+    payload = payload.slice(1, -1).trim();
+  }
+  if (!payload.startsWith("{") && !payload.startsWith("[")) {
+    throw new Error("NMC JSONP payload is not JSON");
+  }
+  return JSON.parse(payload) as unknown;
+}
+
+async function fetchNmcText(url: string, signal: AbortSignal): Promise<string> {
+  const response = await fetch(url, {
+    cache: "no-store",
+    credentials: "omit",
+    mode: "cors",
+    referrerPolicy: "no-referrer",
+    signal,
+  });
+  if (!response.ok) throw new Error(`NMC request failed with ${response.status}`);
+
+  const declaredLength = finiteNumber(response.headers.get("content-length"));
+  if (declaredLength !== null && declaredLength > NMC_MAX_RESPONSE_BYTES) {
+    throw new Error("NMC response exceeds the size limit");
+  }
+  const text = await response.text();
+  if (new TextEncoder().encode(text).byteLength > NMC_MAX_RESPONSE_BYTES) {
+    throw new Error("NMC response exceeds the size limit");
+  }
+  return text;
+}
+
+function normalizeWindRadii(value: unknown): NonNullable<TrackPoint["windRadiiKm"]> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    if (!Array.isArray(raw)) return [];
+    const threshold = String(raw[0] ?? "").match(/\d+/);
+    const thresholdKts = threshold ? finiteNumber(threshold[0]) : null;
+    if (thresholdKts === null) return [];
+    return [{
+      thresholdKts,
+      northeast: finiteNumber(raw[1]),
+      southeast: finiteNumber(raw[2]),
+      southwest: finiteNumber(raw[3]),
+      northwest: finiteNumber(raw[4]),
+    }];
+  });
+}
+
+function normalizeObservation(value: unknown): TrackPoint | null {
+  if (!Array.isArray(value)) return null;
+  const id = finiteNumber(value[0]);
+  const longitude = finiteNumber(value[4]);
+  const latitude = finiteNumber(value[5]);
+  const validAt = epochToIso(value[2]) ?? compactUtcToIso(value[1]);
+  if (
+    id === null || longitude === null || latitude === null || validAt === null ||
+    longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90
+  ) return null;
+
+  const code = nullableString(value[3]) ?? "UNKNOWN";
+  return {
+    id,
+    validAt,
+    longitude,
+    latitude,
+    classification: { code, label: intensityLabel(code) },
+    pressureHpa: finiteNumber(value[6]),
+    maxWindMs: finiteNumber(value[7]),
+    movement: {
+      direction: nullableString(value[8]),
+      speedKmh: finiteNumber(value[9]),
+    },
+    windRadiiKm: normalizeWindRadii(value[10]),
+    distanceToBeijingKm: Math.round(
+      haversine(latitude, longitude, BEIJING.latitude, BEIJING.longitude),
+    ),
+  };
+}
+
+function normalizeForecast(value: unknown): ForecastPoint | null {
+  if (!Array.isArray(value)) return null;
+  const leadHours = finiteNumber(value[0]);
+  const baseAt = compactUtcToIso(value[1]);
+  const longitude = finiteNumber(value[2]);
+  const latitude = finiteNumber(value[3]);
+  const agency = nullableString(value[6])?.toUpperCase();
+  if (
+    leadHours === null || baseAt === null || longitude === null || latitude === null ||
+    agency !== "BABJ" || longitude < -180 || longitude > 180 ||
+    latitude < -90 || latitude > 90
+  ) return null;
+
+  const validAtTimestamp = Date.parse(baseAt) + leadHours * 3_600_000;
+  const code = nullableString(value[7]) ?? "UNKNOWN";
+  return {
+    id: validAtTimestamp,
+    leadHours,
+    baseAt,
+    validAt: new Date(validAtTimestamp).toISOString(),
+    longitude,
+    latitude,
+    classification: { code, label: intensityLabel(code) },
+    pressureHpa: finiteNumber(value[4]),
+    maxWindMs: finiteNumber(value[5]),
+    agency: "BABJ",
+    distanceToBeijingKm: Math.round(
+      haversine(latitude, longitude, BEIJING.latitude, BEIJING.longitude),
+    ),
+  };
+}
+
+function titleCaseName(name: string) {
+  return name
+    .toLowerCase()
+    .split(/([\s-]+)/)
+    .map((part) => (/^[a-z]/.test(part) ? part[0].toUpperCase() + part.slice(1) : part))
+    .join("");
+}
+
+async function fetchDirectNmcBavi(signal: AbortSignal): Promise<TyphoonPayload> {
+  const listUrl = new URL(NMC_LIST_ENDPOINT);
+  listUrl.searchParams.set("t", String(Date.now()));
+  listUrl.searchParams.set("callback", "typhoon_jsons_list_default");
+  const listPayload = parseNmcPayload(await fetchNmcText(listUrl.href, signal));
+  if (!isRecord(listPayload) || !Array.isArray(listPayload.typhoonList)) {
+    throw new Error("NMC typhoon list has an unexpected shape");
+  }
+
+  const matches = listPayload.typhoonList.filter(
+    (entry) => Array.isArray(entry) && nullableString(entry[1])?.toUpperCase() === "BAVI",
+  );
+  const listEntry = matches.find(
+    (entry) => Array.isArray(entry) && nullableString(entry[7])?.toLowerCase() === "start",
+  ) ?? matches[0];
+  if (!Array.isArray(listEntry)) throw new Error("Bavi is not present in the NMC list");
+  const internalId = finiteNumber(listEntry[0]);
+  if (internalId === null) throw new Error("Bavi has no NMC internal id");
+
+  const callback = `typhoon_jsons_view_${internalId}`;
+  const detailUrl = new URL(`${NMC_DETAIL_ENDPOINT}/view_${internalId}`);
+  detailUrl.searchParams.set("t", String(Date.now()));
+  detailUrl.searchParams.set("callback", callback);
+  const detailPayload = parseNmcPayload(await fetchNmcText(detailUrl.href, signal));
+  if (!isRecord(detailPayload) || !Array.isArray(detailPayload.typhoon)) {
+    throw new Error("NMC Bavi detail has an unexpected shape");
+  }
+
+  const typhoon = detailPayload.typhoon;
+  const rawPoints = typhoon[8];
+  if (!Array.isArray(rawPoints)) throw new Error("NMC Bavi detail contains no track");
+  const observed = rawPoints
+    .map(normalizeObservation)
+    .filter((point): point is TrackPoint => point !== null)
+    .sort((left, right) => left.validAt.localeCompare(right.validAt));
+  if (observed.length < 2) throw new Error("NMC Bavi track is empty");
+
+  let rawBabjForecast: unknown[] = [];
+  for (let index = rawPoints.length - 1; index >= 0; index -= 1) {
+    const rawPoint = rawPoints[index];
+    if (!Array.isArray(rawPoint) || !isRecord(rawPoint[11])) continue;
+    const candidate = rawPoint[11].BABJ;
+    if (Array.isArray(candidate) && candidate.length > 0) {
+      rawBabjForecast = candidate;
+      break;
+    }
+  }
+  const forecast = rawBabjForecast
+    .map(normalizeForecast)
+    .filter((point): point is ForecastPoint => point !== null)
+    .sort((left, right) => left.leadHours - right.leadHours);
+  if (forecast.length === 0) throw new Error("NMC Bavi detail contains no BABJ forecast");
+
+  const current = observed[observed.length - 1];
+  const closestForecast = forecast.reduce<ForecastPoint | null>(
+    (closest, point) => closest === null ||
+      (point.distanceToBeijingKm ?? Infinity) < (closest.distanceToBeijingKm ?? Infinity)
+      ? point
+      : closest,
+    null,
+  );
+  const generatedAt = new Date().toISOString();
+  return {
+    schemaVersion: "1.0",
+    status: {
+      mode: "live",
+      active: nullableString(typhoon[7])?.toLowerCase() === "start" ||
+        nullableString(listEntry[7])?.toLowerCase() === "start",
+      message: "Live CMA/NMC observation and BABJ forecast.",
+    },
+    updatedAt: current.validAt,
+    generatedAt,
+    source: {
+      provider: "China Meteorological Administration — National Meteorological Center",
+      agency: "CMA / NMC",
+      product: "Official typhoon track and BABJ forecast",
+      detailUrl: detailUrl.href,
+      isFallback: false,
+    },
+    storm: {
+      id: String(typhoon[3] ?? listEntry[3] ?? "2609"),
+      name: titleCaseName(nullableString(typhoon[1]) ?? "BAVI"),
+      localName: nullableString(typhoon[2]) ?? "巴威",
+      basin: "Western North Pacific",
+      current,
+    },
+    observed,
+    forecast,
+    beijing: {
+      currentDistanceKm: current.distanceToBeijingKm ?? Math.round(
+        haversine(current.latitude, current.longitude, BEIJING.latitude, BEIJING.longitude),
+      ),
+      minDistanceKm: closestForecast?.distanceToBeijingKm ?? null,
+      closestForecast: closestForecast ? {
+        validAt: closestForecast.validAt,
+        leadHours: closestForecast.leadHours,
+        distanceKm: closestForecast.distanceToBeijingKm ?? Math.round(
+          haversine(
+            closestForecast.latitude,
+            closestForecast.longitude,
+            BEIJING.latitude,
+            BEIJING.longitude,
+          ),
+        ),
+        latitude: closestForecast.latitude,
+        longitude: closestForecast.longitude,
+      } : null,
+    },
+  };
+}
+
+function isTrackPoint(value: unknown): value is TrackPoint {
+  if (!isRecord(value) || !isRecord(value.classification)) return false;
+  // The existing Worker forecast intentionally has no synthetic point id.
+  return (value.id === undefined || finiteNumber(value.id) !== null) &&
+    typeof value.validAt === "string" && Number.isFinite(Date.parse(value.validAt)) &&
+    finiteNumber(value.latitude) !== null && finiteNumber(value.longitude) !== null &&
+    typeof value.classification.code === "string" &&
+    typeof value.classification.label === "string";
+}
+
+function isUsableTyphoonPayload(value: unknown): value is TyphoonPayload {
+  if (
+    !isRecord(value) || !isRecord(value.status) || !isRecord(value.source) ||
+    !isRecord(value.storm) || !isRecord(value.beijing) ||
+    !Array.isArray(value.observed) || !Array.isArray(value.forecast)
+  ) return false;
+
+  const statusMode = value.status.mode;
+  const closestForecast = value.beijing.closestForecast;
+  return value.schemaVersion === "1.0" &&
+    (statusMode === "live" || statusMode === "fallback") &&
+    typeof value.status.active === "boolean" &&
+    typeof value.updatedAt === "string" && Number.isFinite(Date.parse(value.updatedAt)) &&
+    typeof value.generatedAt === "string" && Number.isFinite(Date.parse(value.generatedAt)) &&
+    typeof value.source.detailUrl === "string" &&
+    isTrackPoint(value.storm.current) &&
+    value.observed.length >= 2 && value.observed.every(isTrackPoint) &&
+    value.forecast.every((point) => isRecord(point) &&
+      finiteNumber(point.leadHours) !== null && isTrackPoint(point)) &&
+    finiteNumber(value.beijing.currentDistanceKm) !== null &&
+    (closestForecast === null || (
+      isRecord(closestForecast) &&
+      typeof closestForecast.validAt === "string" &&
+      finiteNumber(closestForecast.leadHours) !== null &&
+      finiteNumber(closestForecast.distanceKm) !== null &&
+      finiteNumber(closestForecast.latitude) !== null &&
+      finiteNumber(closestForecast.longitude) !== null
+    ));
+}
+
+async function fetchPreferredPayload(signal: AbortSignal): Promise<TyphoonPayload> {
+  try {
+    const response = await fetch(`/api/typhoon/bavi?t=${Date.now()}`, {
+      cache: "no-store",
+      signal,
+    });
+    if (!response.ok) throw new Error("Site live feed unavailable");
+    const incoming = await response.json() as unknown;
+    if (!isUsableTyphoonPayload(incoming)) throw new Error("Malformed site live feed");
+    return incoming;
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return fetchDirectNmcBavi(signal);
+  }
+}
+
+function readCachedPayload(): TyphoonPayload | null {
+  try {
+    const cached = window.localStorage.getItem(BAVI_CACHE_KEY);
+    if (!cached) return null;
+    const parsed = JSON.parse(cached) as unknown;
+    return isUsableTyphoonPayload(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedPayload(payload: TyphoonPayload) {
+  try {
+    window.localStorage.setItem(BAVI_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // Storage may be unavailable in privacy modes; the live view still works.
+  }
+}
 
 const fallbackObserved: TrackPoint[] = [
   [1782950400000, 11, 160.1, "TS", 998, 18],
@@ -621,33 +1025,23 @@ export default function TyphoonExperience() {
       if (document.hidden) return;
       controller?.abort();
       controller = new AbortController();
-      const timeout = window.setTimeout(() => controller?.abort(), 12_000);
+      const timeout = window.setTimeout(() => controller?.abort(), 24_000);
       try {
-        const response = await fetch(`/api/typhoon/bavi?t=${Date.now()}`, { cache: "no-store", signal: controller.signal });
-        if (!response.ok) throw new Error("Live feed unavailable");
-        const incoming = (await response.json()) as TyphoonPayload;
-        if (!incoming?.storm?.current || !Array.isArray(incoming.observed) || incoming.observed.length < 2) {
-          throw new Error("Malformed live feed");
-        }
+        const incoming = await fetchPreferredPayload(controller.signal);
         if (!active) return;
         setData(incoming);
         setReplayIndex(incoming.observed.length - 1);
         const age = Date.now() - new Date(incoming.updatedAt).getTime();
         setDataMode(incoming.status.mode === "live" ? (age < 6 * 60 * 60 * 1000 ? "live" : "delayed") : "snapshot");
         setLastChecked(new Date().toISOString());
-        localStorage.setItem("bavi-live-cache-v1", JSON.stringify(incoming));
+        writeCachedPayload(incoming);
       } catch {
         if (!active) return;
-        const cached = localStorage.getItem("bavi-live-cache-v1");
+        const cached = readCachedPayload();
         if (cached) {
-          try {
-            const parsed = JSON.parse(cached) as TyphoonPayload;
-            setData(parsed);
-            setReplayIndex(parsed.observed.length - 1);
-            setDataMode("delayed");
-          } catch {
-            setDataMode("snapshot");
-          }
+          setData(cached);
+          setReplayIndex(cached.observed.length - 1);
+          setDataMode("delayed");
         } else {
           setDataMode("snapshot");
         }
