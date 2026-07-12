@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "backroom-poker-live",
+  "name": "backroom-poker-room",
   "main": "multiplayer/worker.ts",
   "compatibility_date": "2026-05-22",
   "durable_objects": {

@@ -80,6 +80,11 @@ while (aliceView.table.status === "playing" && actions < 60) {
 }
 if (aliceView.table.status !== "showdown") throw new Error("hand did not reach showdown");
 
+await call(`/api/tables/${created.tableId}/leave`, { method: "POST" }, carol.token);
+await call(`/api/tables/${created.tableId}/leave`, { method: "POST" }, alice.token);
+const cleanedLobby = await call("/api/lobby", {}, alice.token);
+if (cleanedLobby.tables.some((table) => table.id === created.tableId)) throw new Error("test table was not cleaned up");
+
 console.log(JSON.stringify({
   sessions: 3,
   duplicateRejected: true,
@@ -87,6 +92,7 @@ console.log(JSON.stringify({
   lobbyCount: listed.joinedCount,
   privateCardsProtected: true,
   departedSeatReused: true,
+  testTableCleaned: true,
   actions,
   finalStatus: aliceView.table.status,
 }));
