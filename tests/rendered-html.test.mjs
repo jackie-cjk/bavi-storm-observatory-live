@@ -34,6 +34,8 @@ test("server-renders the finished poker table", async () => {
   assert.match(html, /<title>暗桌私人局 — 德州扑克<\/title>/i);
   assert.match(html, /THE BACKROOM/);
   assert.match(html, /5\/5 盲注/);
-  assert.match(html, /当前底池/);
+  assert.match(html, /输入你的玩家 ID/);
+  assert.match(html, /无电脑玩家/);
+  assert.doesNotMatch(html, /本地练习局|MOSS|RAY/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });

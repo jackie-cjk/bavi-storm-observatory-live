@@ -8,7 +8,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
   const title = "暗桌私人局 — 德州扑克";
-  const description = "一款深夜私人牌局风格的本地德州扑克小游戏，支持 2–9 人、5/5 盲注与完整下注流程。";
+  const description = "输入玩家 ID，查看正在进行的真人牌桌，与朋友进行 2–9 人、5/5 盲注的在线德州扑克。";
 
   return {
     metadataBase: new URL(origin),
@@ -16,7 +16,7 @@ export async function generateMetadata(): Promise<Metadata> {
     description,
     applicationName: "The Backroom Poker",
     authors: [{ name: "The Backroom Poker Club" }],
-    keywords: ["德州扑克", "Texas Hold'em", "扑克游戏", "5/5 盲注", "九人桌"],
+    keywords: ["真人德州扑克", "Texas Hold'em", "在线扑克", "5/5 盲注", "九人桌"],
     openGraph: {
       type: "website",
       title,
@@ -43,6 +43,9 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
+      <head>
+        <script src="/config.js" />
+      </head>
       <body>{children}</body>
     </html>
   );

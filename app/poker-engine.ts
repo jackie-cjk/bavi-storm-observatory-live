@@ -103,12 +103,12 @@ function randomFromSeed(seed: number): [number, number] {
   return [next / 4294967296, next];
 }
 
-function createDeck(): Card[] {
+export function createStandardDeck(): Card[] {
   return SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit })));
 }
 
 function shuffle(seed: number): { deck: Card[]; seed: number } {
-  const deck = createDeck();
+  const deck = createStandardDeck();
   let cursor = seed >>> 0;
 
   for (let index = deck.length - 1; index > 0; index -= 1) {
@@ -146,7 +146,13 @@ function appendLog(log: string[], entry: string): string[] {
   return [...log, entry].slice(-12);
 }
 
-function dealHand(basePlayers: Player[], dealer: number, handNo: number, seed: number): GameState {
+function dealPreparedHand(
+  basePlayers: Player[],
+  dealer: number,
+  handNo: number,
+  sourceDeck: Card[],
+  seed: number,
+): GameState {
   const refreshed = basePlayers.map((player) => ({
     ...player,
     stack: player.stack === 0 ? STARTING_STACK : player.stack,
@@ -157,8 +163,7 @@ function dealHand(basePlayers: Player[], dealer: number, handNo: number, seed: n
     totalBet: 0,
     lastAction: "等待",
   }));
-  const shuffled = shuffle(seed);
-  const deck = [...shuffled.deck];
+  const deck = sourceDeck.map((card) => ({ ...card }));
 
   for (let round = 0; round < 2; round += 1) {
     for (const playerIndex of clockwiseAfter(refreshed, dealer)) {
@@ -191,7 +196,7 @@ function dealHand(basePlayers: Player[], dealer: number, handNo: number, seed: n
     pending,
     acted: [],
     handNo,
-    seed: shuffled.seed,
+    seed,
     log: [
       `第 ${handNo} 手开始`,
       `${refreshed[smallBlind].name} 投入小盲 ${smallPaid}`,
@@ -201,6 +206,21 @@ function dealHand(basePlayers: Player[], dealer: number, handNo: number, seed: n
     result: "",
     lastPot: 0,
   };
+}
+
+export function dealHand(basePlayers: Player[], dealer: number, handNo: number, seed: number): GameState {
+  const shuffled = shuffle(seed);
+  return dealPreparedHand(basePlayers, dealer, handNo, shuffled.deck, shuffled.seed);
+}
+
+/**
+ * Deals from an already shuffled deck. The multiplayer Worker uses this entry
+ * point with a cryptographically shuffled deck, while local/demo games retain
+ * the deterministic seeded `dealHand` behavior above.
+ */
+export function dealHandFromDeck(basePlayers: Player[], dealer: number, handNo: number, deck: Card[]): GameState {
+  if (deck.length !== 52) throw new Error("A complete 52-card deck is required");
+  return dealPreparedHand(basePlayers, dealer, handNo, deck, 0);
 }
 
 export function createTable(playerCount = 6, seed = 0x5f3759df): GameState {
@@ -281,6 +301,26 @@ function settleFoldWin(state: GameState, players: Player[]): GameState {
     lastPot: pot,
     log: appendLog(state.log, `${winnerName} 赢得 ${pot}`),
   };
+}
+
+export function forceFold(state: GameState, actor: number, label = "离桌弃牌"): GameState {
+  if (state.street === "showdown") return state;
+  const players = state.players.map((player) => ({ ...player, hole: [...player.hole] }));
+  const player = players[actor];
+  if (!player || player.folded) return state;
+  player.folded = true;
+  player.lastAction = label;
+  const nextState: GameState = {
+    ...state,
+    players,
+    pending: state.pending.filter((index) => index !== actor),
+    acted: [...new Set([...state.acted, actor])],
+    log: appendLog(state.log, `${player.name} ${label}`),
+  };
+  if (players.filter((candidate) => !candidate.folded).length === 1) {
+    return settleFoldWin(nextState, players);
+  }
+  return nextState;
 }
 
 function sortedPending(players: Player[], actor: number, candidates: Set<number>): number[] {
