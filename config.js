@@ -1,1 +1,1 @@
-window.__BACKROOM_API__ = "https://backroom-poker-live.jackie-cjk.workers.dev";
+window.__BACKROOM_API__ = "https://backroom-poker-room.jackie-cjk.workers.dev";
