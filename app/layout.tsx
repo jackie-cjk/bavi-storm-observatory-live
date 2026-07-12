@@ -7,22 +7,23 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "暗桌私人局 — 德州扑克";
-  const description = "输入玩家 ID，查看正在进行的真人牌桌，与朋友进行 2–9 人、5/5 盲注的在线德州扑克。";
+  const title = "BAVI 2609 — Live Typhoon Observatory";
+  const description =
+    "A live, particle-driven view of Typhoon Bavi's official CMA track, forecast, history, and far-field rainfall impact on Beijing.";
 
   return {
     metadataBase: new URL(origin),
     title,
     description,
-    applicationName: "The Backroom Poker",
-    authors: [{ name: "The Backroom Poker Club" }],
-    keywords: ["真人德州扑克", "Texas Hold'em", "在线扑克", "5/5 盲注", "九人桌"],
+    applicationName: "Aether Storm Observatory",
+    authors: [{ name: "Aether Storm Observatory" }],
+    keywords: ["Typhoon Bavi", "CMA", "NMC", "Beijing weather", "typhoon tracker"],
     openGraph: {
       type: "website",
       title,
       description,
-      siteName: "暗桌私人局",
-      images: [{ url: `${origin}/og.png`, width: 1536, height: 1024, alt: "暗桌私人局德州扑克牌桌" }],
+      siteName: "Aether Storm Observatory",
+      images: [{ url: `${origin}/og.png`, width: 1733, height: 907, alt: "Bavi 2609 live typhoon track and Beijing impact" }],
     },
     twitter: {
       card: "summary_large_image",
@@ -34,7 +35,7 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export const viewport: Viewport = {
-  themeColor: "#090a0b",
+  themeColor: "#02060d",
   colorScheme: "dark",
   width: "device-width",
   initialScale: 1,
@@ -42,10 +43,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="zh-CN">
-      <head>
-        <script src="/config.js?v=2" />
-      </head>
+    <html lang="en">
       <body>{children}</body>
     </html>
   );

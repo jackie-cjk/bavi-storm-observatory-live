@@ -1,5 +1,5 @@
-import PokerGame from "./PokerGame";
+import TyphoonExperience from "./TyphoonExperience";
 
 export default function Home() {
-  return <PokerGame />;
+  return <TyphoonExperience />;
 }
