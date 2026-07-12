@@ -7,23 +7,22 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "BAVI 2609 — Live Typhoon Observatory";
-  const description =
-    "A live, particle-driven view of Typhoon Bavi's official CMA track, forecast, history, and far-field rainfall impact on Beijing.";
+  const title = "暗桌私人局 — 德州扑克";
+  const description = "一款深夜私人牌局风格的本地德州扑克小游戏，支持 2–9 人、5/5 盲注与完整下注流程。";
 
   return {
     metadataBase: new URL(origin),
     title,
     description,
-    applicationName: "Aether Storm Observatory",
-    authors: [{ name: "Aether Storm Observatory" }],
-    keywords: ["Typhoon Bavi", "CMA", "NMC", "Beijing weather", "typhoon tracker"],
+    applicationName: "The Backroom Poker",
+    authors: [{ name: "The Backroom Poker Club" }],
+    keywords: ["德州扑克", "Texas Hold'em", "扑克游戏", "5/5 盲注", "九人桌"],
     openGraph: {
       type: "website",
       title,
       description,
-      siteName: "Aether Storm Observatory",
-      images: [{ url: `${origin}/og.png`, width: 1733, height: 907, alt: "Bavi 2609 live typhoon track and Beijing impact" }],
+      siteName: "暗桌私人局",
+      images: [{ url: `${origin}/og.png`, width: 1536, height: 1024, alt: "暗桌私人局德州扑克牌桌" }],
     },
     twitter: {
       card: "summary_large_image",
@@ -35,7 +34,7 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export const viewport: Viewport = {
-  themeColor: "#02060d",
+  themeColor: "#090a0b",
   colorScheme: "dark",
   width: "device-width",
   initialScale: 1,
@@ -43,7 +42,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="zh-CN">
       <body>{children}</body>
     </html>
   );
