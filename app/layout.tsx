@@ -44,7 +44,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="zh-CN">
       <head>
-        <script src="/config.js" />
+        <script src="/config.js?v=2" />
       </head>
       <body>{children}</body>
     </html>
